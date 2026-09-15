@@ -85,7 +85,7 @@ pre.mail{white-space:pre-wrap;background:#fff;border:1px solid var(--bord);borde
   <div class="grille">
 
     <section class="carte">
-      <h2>Stock frigo 4 <span class="pastille" id="cptF4">0 article</span><span class="horodatage" id="dateF4"></span></h2>
+      <h2>Stock frigo 4 (Listing 202) <span class="pastille" id="cptF4">0 article</span><span class="horodatage" id="dateF4"></span></h2>
       <p class="aide">Listing « 2204 - 202 Stock Frigo 4 ». Somme des Totaal en kg, divisée par le poids palette.</p>
       <div class="ligne-fichier">
         <button class="btn" onclick="document.getElementById('fF4').click()">Charger le PDF</button>
@@ -113,7 +113,7 @@ pre.mail{white-space:pre-wrap;background:#fff;border:1px solid var(--bord);borde
     </section>
 
     <section class="carte">
-      <h2>Stock frigo 1 <span class="pastille" id="cptF1">0 article</span><span class="horodatage" id="dateF1"></span></h2>
+      <h2>Stock frigo 1 (Listing 200) <span class="pastille" id="cptF1">0 article</span><span class="horodatage" id="dateF1"></span></h2>
       <p class="aide">Listing « Actueel voorraadbestand ». Les codes de la liste vont au mail ; les poitrines hors liste partent au frigo 4, une palette par ligne de lot.</p>
       <div class="ligne-fichier">
         <button class="btn" onclick="document.getElementById('fF1').click()">Charger le PDF</button>
@@ -134,8 +134,8 @@ pre.mail{white-space:pre-wrap;background:#fff;border:1px solid var(--bord);borde
     </section>
 
     <section class="carte">
-      <h2>Commandes du jour <span class="pastille" id="cptCmd">0 ligne</span></h2>
-      <p class="aide">Listing 95 « Nog te produceren ». Quantité retenue : la colonne « nog te produceren ». Sert à nommer le client sur chaque ligne du mail.</p>
+      <h2>Commandes du jour (Listing 95) <span class="pastille" id="cptCmd">0 ligne</span></h2>
+      <p class="aide">Listing 95 « Nog te produceren ». Quantité retenue : la colonne « nog te produceren ». Les commandes portant un site de production (Ommel, Dedemsvaart…) sont servies ailleurs et n'apparaissent pas au mail.</p>
       <div class="ligne-fichier">
         <button class="btn" onclick="document.getElementById('fCmd').click()">Charger le PDF</button>
         <input type="file" id="fCmd" accept="application/pdf">
@@ -238,7 +238,7 @@ function parseStock(txt){
 
 /* Listing 95 des commandes : bloc article, puis une ligne par client.
    Quantité retenue = « nog te produceren » (avant-dernier nombre). */
-const RX_CLIENT = /^(\d{1,6})\s+(.+?)\s+(\d{5,7})\s+(\d+)\s+(\d+)\s+(KR|DS|ST|PC)\b/i;
+const RX_CLIENT = /^(\d{1,6})\s+(.+?)\s+(\d{5,7})\s+(\d+)\s+(\d+)\s+(KR|DS|ST|PC)\b\s*(.*)$/i;
 const RX_TOTAAL_CMD = /^totaal\s*:/i;
 
 function parseCommandes(txt){
@@ -251,7 +251,9 @@ function parseCommandes(txt){
     const mc = l.match(RX_CLIENT);
     if(mc && code){
       const qte = parseInt(mc[5],10);
-      if(qte > 0) ventes.push({code, client:mc[2].trim(), qte, unite:mc[6].toUpperCase()});
+      const site = (mc[7] || "").trim();   // Ommel, Dedemsvaart, Maasmechelen… : produit sur un autre site
+      if(qte > 0) ventes.push({code, client:mc[2].trim(), qte, besteld:parseInt(mc[4],10),
+                               unite:mc[6].toUpperCase(), site});
       return;
     }
     const ma = l.match(RX_ARTICLE);
@@ -303,14 +305,20 @@ const RX_SUFFIXE = /\b(LIMITED|LTD|LTD\.|B\.?V\.?|N\.?V\.?|S\.?A\.?S?|SARL|GMBH|
 function nomCourt(client, alias){
   const clef = client.trim().toUpperCase();
   if(alias && alias[clef]) return alias[clef];
-  let n = client.replace(/\b\d+\b/g, " ").replace(RX_SUFFIXE, " ").replace(/\s{2,}/g," ").replace(/[-,]\s*$/,"").trim();
+  let n = client.replace(/\b\d+\b/g, " ").replace(RX_SUFFIXE, " ")
+                .replace(/\s{2,}/g," ").replace(/\s+([.,])/g,"$1")
+                .replace(/[-,.\s]+$/,"").trim();
   if(!n) n = client.trim();
   return n.split(/\s+/).map(m => m[0] + m.slice(1).toLowerCase()).join(" ");
 }
 
-function ventesParCode(ventes){
+/* Une commande portant un site de production (Ommel, Dedemsvaart…) est servie ailleurs :
+   elle ne touche pas le stock de Mouscron et ne figure donc pas au mail. */
+const sertMouscron = v => !v.site;
+
+function ventesParCode(ventes, toutes){
   const v = {};
-  ventes.forEach(x => { (v[x.code] = v[x.code] || []).push(x); });
+  ventes.filter(x => toutes || sertMouscron(x)).forEach(x => { (v[x.code] = v[x.code] || []).push(x); });
   return v;
 }
 
@@ -352,10 +360,10 @@ function anomalies(interet, ventes, codesListe){
 function genererMail(pp, lignes, palettesTransferees){
   const n = palettesTransferees;
   let t = "Bonjour,\n";
-  t += "Il y a " + pp + "pp au frigo 4 :\n\n";
+  t += "Il y a " + pp + "pp au frigo 4 et " + n + " palette" + (n>1?"s":"") +
+       " transférée" + (n>1?"s":"") + " au frigo 4.\n\n";
   t += lignes.join("\n\n");
-  t += "\n\n" + n + " palette" + (n>1?"s":"") + " transférée" + (n>1?"s":"") + " au frigo 4.\n";
-  t += "\nBonne journée,\n";
+  t += "\n\nBonne journée,\n";
   return t;
 }
 
@@ -472,7 +480,7 @@ function rafraichir(){
   const utiles = cm.ventes.filter(v => stockSet.has(v.code));
   $("cptCmd").textContent = cm.ventes.length + (cm.ventes.length > 1 ? " lignes" : " ligne");
   $("apercuCmd").innerHTML = utiles.length ? `<table><thead><tr><th>Code</th><th>Client</th><th class="num">Vendu</th></tr></thead><tbody>
-    ${utiles.map(v => `<tr><td class="code">${v.code}</td><td>${esc(v.client)}</td><td class="num">${v.qte} ${v.unite}</td></tr>`).join("")}
+    ${utiles.map(v => `<tr><td class="code">${v.code}</td><td>${esc(v.client)}${v.site ? ` <span class="gris">— ${esc(v.site)}, non repris</span>` : ""}</td><td class="num">${v.qte} ${v.unite}</td></tr>`).join("")}
     </tbody></table>` : (cm.ventes.length ? `<p class="vide">Aucune commande ne porte sur un article en stock au frigo 1.</p>` : "");
   afficherNote("noteVentes", anomalies(r1.interet, cm.ventes, codes), "<b>Attention</b>");
 

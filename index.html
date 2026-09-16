@@ -114,7 +114,7 @@ pre.mail{white-space:pre-wrap;background:#fff;border:1px solid var(--bord);borde
 
     <section class="carte">
       <h2>Stock frigo 1 (Listing 200) <span class="pastille" id="cptF1">0 article</span><span class="horodatage" id="dateF1"></span></h2>
-      <p class="aide">Listing « Actueel voorraadbestand ». Les codes de la liste vont au mail ; les poitrines hors liste partent au frigo 4, une palette par ligne de lot.</p>
+      <p class="aide">Listing « Actueel voorraadbestand ». Les codes de la liste vont au mail ; les poitrines hors liste partent au frigo 4, une palette par ligne de lot. Un lot trop ancien déclenche la mention « congélateur = DLC dépassée ?? ».</p>
       <div class="ligne-fichier">
         <button class="btn" onclick="document.getElementById('fF1').click()">Charger le PDF</button>
         <input type="file" id="fF1" accept="application/pdf">
@@ -124,6 +124,19 @@ pre.mail{white-space:pre-wrap;background:#fff;border:1px solid var(--bord);borde
       <div class="reglage">
         <label for="motCle">Mot-clé transfert</label>
         <input type="text" id="motCle" value="POITRINE" style="width:130px">
+      </div>
+      <div class="reglage">
+        <label for="seuilAge">Alerte DLC à partir de</label>
+        <input type="number" id="seuilAge" value="2" min="0">
+        <select id="typeJours">
+          <option value="ouvres">jours ouvrés</option>
+          <option value="calendrier">jours calendrier</option>
+        </select>
+        <span class="gris">0 pour désactiver</span>
+      </div>
+      <div class="reglage">
+        <label><input type="checkbox" id="decoupeParDate" checked style="width:auto"> Une ligne par date de production</label>
+        <span class="gris">décoché : une ligne par origine seulement</span>
       </div>
       <div class="calcul">
         <span class="n" id="totTransfert">0</span>
@@ -135,7 +148,7 @@ pre.mail{white-space:pre-wrap;background:#fff;border:1px solid var(--bord);borde
 
     <section class="carte">
       <h2>Commandes du jour (Listing 95) <span class="pastille" id="cptCmd">0 ligne</span></h2>
-      <p class="aide">Listing 95 « Nog te produceren ». Quantité retenue : la colonne « nog te produceren ». Les commandes portant un site de production (Ommel, Dedemsvaart…) sont servies ailleurs et n'apparaissent pas au mail.</p>
+      <p class="aide">Listing 95 « Nog te produceren ». Le stock est attribué aux clients dans l'ordre du listing, jusqu'à épuisement. Les commandes portant un site de production (Ommel, Dedemsvaart…) ou la mention « frais du jour » ne se prennent pas sur le stock et n'apparaissent pas au mail.</p>
       <div class="ligne-fichier">
         <button class="btn" onclick="document.getElementById('fCmd').click()">Charger le PDF</button>
         <input type="file" id="fCmd" accept="application/pdf">
@@ -154,6 +167,7 @@ pre.mail{white-space:pre-wrap;background:#fff;border:1px solid var(--bord);borde
         <label for="tailleLot">Taille d'un lot plein</label>
         <input type="number" id="tailleLot" value="48" min="0">
         <span class="gris">0 pour ne pas regrouper les lots</span>
+
       </div>
     </section>
 
@@ -200,7 +214,27 @@ const RX_ARTICLE = /^(\d{4})\s+(?=[A-Za-zÀ-ÿ])(.{3,})$/;
 const RX_TOTAL   = /^\s*totaal\b/i;
 const RX_KG      = /(\d[\d.]*)\s*KG\b/i;
 const RX_QTE_U   = /(\d[\d.]*)\s*(KR|DS|ST|PC)\b/i;
-const RX_LOT     = /^\d{12,}\s+(\d[\d.]*)\s*(KR|DS|ST|PC)\b/i;
+const RX_LOT     = /^\d{12,}\s+(\d[\d.]*)\s*(KR|DS|ST|PC)\b.*?(\d{2})\.(\d{2})\.(\d{2})/i;
+const RX_FOURNISSEUR = /\b(PLUKON\s+[A-Z][A-Z\s]*?)\s*(?:UK\s+Approved)?\s*$/i;
+const RX_MOUSCRON = /MOESKROEN|MOUSCRON/i;
+const RX_DATE_LISTING = /Datum\/Tijd\s+(\d{2})\.(\d{2})\.(\d{2})/i;
+const jourJulien = (j,m,a) => Math.floor(Date.UTC(2000 + a, m - 1, j) / 86400000);
+
+/* Écart en jours ouvrés : un lot du vendredi a un jour d'âge le lundi, pas trois. */
+function ecartOuvre(depuis, jusqua){
+  if(jusqua <= depuis) return 0;
+  let n = 0;
+  for(let j = depuis + 1; j <= jusqua && n < 400; j++){
+    const d = new Date(j * 86400000).getUTCDay();
+    if(d !== 0 && d !== 6) n++;
+  }
+  return n;
+}
+
+function dateListing(txt){
+  const m = txt.match(RX_DATE_LISTING);
+  return m ? jourJulien(+m[1], +m[2], +m[3]) : null;
+}
 const RX_SAUT    = [
   /^plukon\s+mouscron/i, /^\d{4}\s*-\s*\d{3}\b/, /^datum\/tijd/i, /^aantal in/i,
   /^FA\d{4}\b/, /^\d{2}\s+nog te produceren/i, /^laaddatum/i, /^nog te$/i, /^artikel\s+klant/i
@@ -210,6 +244,7 @@ const estSaut = l => RX_SAUT.some(r => r.test(l));
 /* Listing de stock (frigo 1 ou frigo 4) : un bloc par article, clos par une ligne Totaal. */
 function parseStock(txt){
   const articles = [], ignorees = [];
+  const dateDoc = dateListing(txt);
   let courant = null;
   const clore = () => { if(courant) articles.push(courant); courant = null; };
 
@@ -227,19 +262,36 @@ function parseStock(txt){
       clore(); return;
     }
     const ma = l.match(RX_ARTICLE);
-    if(ma){ clore(); courant = {code:ma[1], libelle:ma[2].trim(), lots:0, tailles:[], qte:0, unite:"", kg:0, totalLu:false}; return; }
+    if(ma){ clore(); courant = {code:ma[1], libelle:ma[2].trim(), lots:0, tailles:[], jours:[], detailLots:[], qte:0, unite:"", kg:0, totalLu:false}; return; }
     const ml = l.match(RX_LOT);
-    if(ml){ if(courant){ courant.lots++; courant.tailles.push(nbr(ml[1])); } return; }
+    if(ml){
+      if(courant){
+        const mf = l.match(RX_FOURNISSEUR);
+        const site = (mf && !RX_MOUSCRON.test(mf[1])) ? mf[1].trim().replace(/\s+/g," ") : "";
+        courant.lots++;
+        courant.tailles.push(nbr(ml[1]));
+        courant.jours.push(jourJulien(+ml[3], +ml[4], +ml[5]));
+        courant.detailLots.push({taille:nbr(ml[1]), jour:jourJulien(+ml[3], +ml[4], +ml[5]), site});
+      }
+      return;
+    }
     ignorees.push(l);
   });
   clore();
-  return {articles, ignorees};
+  // Âge du lot le plus ancien, en jours ouvrés et en jours calendrier
+  if(dateDoc !== null) articles.forEach(a => {
+    a.dateDoc = dateDoc;
+    a.ageOuvre    = a.jours.length ? Math.max(...a.jours.map(j => ecartOuvre(j, dateDoc))) : 0;
+    a.ageCalendrier = a.jours.length ? Math.max(...a.jours.map(j => dateDoc - j)) : 0;
+  });
+  return {articles, ignorees, dateDoc};
 }
 
 /* Listing 95 des commandes : bloc article, puis une ligne par client.
    Quantité retenue = « nog te produceren » (avant-dernier nombre). */
 const RX_CLIENT = /^(\d{1,6})\s+(.+?)\s+(\d{5,7})\s+(\d+)\s+(\d+)\s+(KR|DS|ST|PC)\b\s*(.*)$/i;
 const RX_TOTAAL_CMD = /^totaal\s*:/i;
+const RX_FRAIS_JOUR = /\bfrais\s+du\s+jour\b/i;
 
 function parseCommandes(txt){
   const ventes = [], ignorees = [];
@@ -253,7 +305,14 @@ function parseCommandes(txt){
       const qte = parseInt(mc[5],10);
       const site = (mc[7] || "").trim();   // Ommel, Dedemsvaart, Maasmechelen… : produit sur un autre site
       if(qte > 0) ventes.push({code, client:mc[2].trim(), qte, besteld:parseInt(mc[4],10),
-                               unite:mc[6].toUpperCase(), site});
+                               unite:mc[6].toUpperCase(), site, fraisDuJour:false});
+      return;
+    }
+
+    // « FRAIS DU JOUR » suit la ligne client à laquelle elle se rapporte :
+    // l'article sera produit le jour même, il ne se prend pas sur le stock.
+    if(RX_FRAIS_JOUR.test(l)){
+      if(ventes.length) ventes[ventes.length - 1].fraisDuJour = true;
       return;
     }
     const ma = l.match(RX_ARTICLE);
@@ -312,9 +371,10 @@ function nomCourt(client, alias){
   return n.split(/\s+/).map(m => m[0] + m.slice(1).toLowerCase()).join(" ");
 }
 
-/* Une commande portant un site de production (Ommel, Dedemsvaart…) est servie ailleurs :
-   elle ne touche pas le stock de Mouscron et ne figure donc pas au mail. */
-const sertMouscron = v => !v.site;
+/* Ne touchent pas le stock de Mouscron, et ne figurent donc pas au mail :
+   les commandes portant un site de production (Ommel, Dedemsvaart…), servies ailleurs,
+   et celles marquées « frais du jour », produites le jour même. */
+const sertMouscron = v => !v.site && !v.fraisDuJour;
 
 function ventesParCode(ventes, toutes){
   const v = {};
@@ -325,20 +385,66 @@ function ventesParCode(ventes, toutes){
 /* Lignes du mail : la quantité en stock telle quelle, la vente entre parenthèses.
    Les ventes ne sont pas retranchées : la marchandise est encore au frigo.
    Si un seul client emporte tout l'article, la quantité disparaît de la parenthèse. */
+/* Un article donne une ligne par origine et par date de production.
+   Les lots venus d'un autre site Plukon (Ommel, Dedemsvaart…) sont listés à part
+   et n'entrent jamais dans l'alerte congélateur. */
+function groupesLots(a, parDate){
+  const parCle = new Map();
+  a.detailLots.forEach(l => {
+    const cle = l.site + "|" + (parDate === false ? "" : l.jour);
+    if(!parCle.has(cle)) parCle.set(cle, {site:l.site, jour:l.jour, tailles:[], qte:0});
+    const g = parCle.get(cle);
+    g.tailles.push(l.taille);
+    g.qte += l.taille;
+    if(l.jour < g.jour) g.jour = l.jour;      // le lot le plus ancien commande l'alerte
+  });
+  const g = [...parCle.values()];
+  // Mouscron d'abord, puis les autres sites ; du plus ancien au plus récent
+  g.sort((x,y) => (x.site?1:0) - (y.site?1:0) || x.jour - y.jour);
+  return g;
+}
+
 function lignesMail(interet, ventes, opts){
   opts = opts || {};
   const tailleLot = opts.tailleLot || 0;
   const alias = opts.alias || {};
+  const seuilAge = opts.seuilAge === undefined ? 2 : opts.seuilAge;
   const parCode = ventesParCode(ventes);
-  return interet.map(a => {
+  const out = [];
+
+  interet.forEach(a => {
     const v = parCode[a.code] || [];
-    let ligne = notationLots(a, tailleLot) + " " + a.code;
-    if(!v.length) return ligne;
-    const vendu = v.reduce((s,x) => s + x.qte, 0);
-    if(v.length === 1 && vendu >= a.qte)
-      return ligne + " (Vendu pour " + nomCourt(v[0].client, alias) + ")";
-    return ligne + " (" + v.map(x => notation(x.qte, a.unite) + " vendu pour " + nomCourt(x.client, alias)).join(" et ") + ")";
+
+    // Le stock est attribué aux clients dans l'ordre du listing, jusqu'à épuisement.
+    // Ce qui est commandé au-delà du stock sera produit : cela ne concerne pas ce récap.
+    let restant = a.qte;
+    const alloues = [];
+    for(const x of v){
+      if(restant <= 0) break;
+      const pris = Math.min(x.qte, restant);
+      alloues.push({client:x.client, qte:pris});
+      restant -= pris;
+    }
+    const mention = !alloues.length ? ""
+      : (alloues.length === 1 && alloues[0].qte >= a.qte)
+        ? " (Vendu pour " + nomCourt(alloues[0].client, alias) + ")"
+        : " (" + alloues.map(x => notation(x.qte, a.unite) + " vendu pour " + nomCourt(x.client, alias)).join(" et ") + ")";
+
+    const groupes = a.detailLots && a.detailLots.length ? groupesLots(a, opts.decoupeParDate !== false) : [];
+    if(!groupes.length){ out.push(notation(a.qte, a.unite) + " " + a.code + mention); return; }
+
+    groupes.forEach((g, i) => {
+      const faux = {qte:g.qte, unite:a.unite, tailles:g.tailles};
+      let ligne = notationLots(faux, tailleLot) + " " + a.code;
+      if(i === 0) ligne += mention;                      // la vente se rattache à la première ligne
+      if(!g.site && seuilAge){
+        const age = opts.joursCalendrier ? (a.dateDoc - g.jour) : ecartOuvre(g.jour, a.dateDoc);
+        if(age >= seuilAge) ligne += "  congélateur = DLC dépassée ??";
+      }
+      out.push(ligne);
+    });
   });
+  return out;
 }
 
 function anomalies(interet, ventes, codesListe){
@@ -466,7 +572,7 @@ function rafraichir(){
   $("dateF1").textContent = horodatage($("tF1").value);
   $("totTransfert").textContent = r1.palettesTransferees;
   $("apercuF1").innerHTML = (r1.interet.length || r1.transfert.length) ? `<table><thead><tr><th>Code</th><th>Article</th><th class="num">Stock</th></tr></thead><tbody>
-    ${r1.interet.map(a => `<tr><td class="code">${a.code}</td><td>${esc(a.libelle)}</td><td class="num"><strong>${a.qte} ${a.unite}</strong></td></tr>`).join("")}
+    ${r1.interet.map(a => `<tr><td class="code">${a.code}</td><td>${esc(a.libelle)}${a.ageOuvre >= 2 ? ` <span class="gris">— lot de J-${a.ageOuvre} ouvrés</span>` : ""}</td><td class="num"><strong>${a.qte} ${a.unite}</strong></td></tr>`).join("")}
     ${r1.transfert.map(a => `<tr><td class="code">${a.code}</td><td>${esc(a.libelle)} <span class="gris">→ frigo 4</span></td><td class="num">${a.lots} palette${a.lots > 1 ? "s" : ""}</td></tr>`).join("")}
     </tbody></table>` : "";
   const sansTotal1 = f1.articles.filter(a => !a.totalLu && codes.includes(a.code)).map(a => a.code + " " + a.libelle);
@@ -480,7 +586,7 @@ function rafraichir(){
   const utiles = cm.ventes.filter(v => stockSet.has(v.code));
   $("cptCmd").textContent = cm.ventes.length + (cm.ventes.length > 1 ? " lignes" : " ligne");
   $("apercuCmd").innerHTML = utiles.length ? `<table><thead><tr><th>Code</th><th>Client</th><th class="num">Vendu</th></tr></thead><tbody>
-    ${utiles.map(v => `<tr><td class="code">${v.code}</td><td>${esc(v.client)}${v.site ? ` <span class="gris">— ${esc(v.site)}, non repris</span>` : ""}</td><td class="num">${v.qte} ${v.unite}</td></tr>`).join("")}
+    ${utiles.map(v => `<tr><td class="code">${v.code}</td><td>${esc(v.client)}${v.site ? ` <span class="gris">— ${esc(v.site)}, non repris</span>` : v.fraisDuJour ? ` <span class="gris">— frais du jour, non repris</span>` : ""}</td><td class="num">${v.qte} ${v.unite}</td></tr>`).join("")}
     </tbody></table>` : (cm.ventes.length ? `<p class="vide">Aucune commande ne porte sur un article en stock au frigo 1.</p>` : "");
   afficherNote("noteVentes", anomalies(r1.interet, cm.ventes, codes), "<b>Attention</b>");
 
@@ -488,7 +594,10 @@ function rafraichir(){
   $("btnRetablir").disabled = !r1.interet.length;
   if(!etat.detManuel && r1.interet.length)
     $("tDet").value = lignesMail(r1.interet, cm.ventes,
-      {tailleLot: parseInt($("tailleLot").value,10) || 0, alias: lireAlias()}).join("\n");
+      {tailleLot: parseInt($("tailleLot").value,10) || 0, alias: lireAlias(),
+       seuilAge: parseInt($("seuilAge").value,10) || 0,
+       joursCalendrier: $("typeJours").value === "calendrier",
+       decoupeParDate: $("decoupeParDate").checked}).join("\n");
 }
 
 function genererEtAfficher(){
@@ -519,8 +628,10 @@ function brancher(idIn, idNom, idTa){
 $("codesF1").value = CODES_DEFAUT.join(" ");
 $("alias").value = ALIAS_DEFAUT;
 brancher("fF4","nF4","tF4"); brancher("fF1","nF1","tF1"); brancher("fCmd","nCmd","tCmd");
-["tF4","tF1","tCmd","poidsPal","motCle","codesF1","alias","tailleLot"].forEach(id => $(id).addEventListener("input", rafraichir));
+["tF4","tF1","tCmd","poidsPal","motCle","codesF1","alias","tailleLot","seuilAge"].forEach(id => $(id).addEventListener("input", rafraichir));
 $("arrondi").addEventListener("change", rafraichir);
+$("typeJours").addEventListener("change", rafraichir);
+$("decoupeParDate").addEventListener("change", rafraichir);
 $("tDet").addEventListener("input", () => { etat.detManuel = true; });
 $("btnRetablir").addEventListener("click", () => { etat.detManuel = false; rafraichir(); });
 $("btnCalc").addEventListener("click", genererEtAfficher);

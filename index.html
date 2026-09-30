@@ -114,7 +114,7 @@ pre.mail{white-space:pre-wrap;background:#fff;border:1px solid var(--bord);borde
 
     <section class="carte">
       <h2>Stock frigo 1 (Listing 200) <span class="pastille" id="cptF1">0 article</span><span class="horodatage" id="dateF1"></span></h2>
-      <p class="aide">Listing « Actueel voorraadbestand ». Les codes de la liste vont au mail ; les poitrines hors liste partent au frigo 4, une palette par ligne de lot. Un lot trop ancien déclenche la mention « congélateur = DLC dépassée ?? ».</p>
+      <p class="aide">Listing « Actueel voorraadbestand ». Les codes de la liste vont au mail ; les articles hors liste correspondant aux mots-clés partent au frigo 4, une palette par ligne de lot. Un lot trop ancien déclenche la mention « congélateur = DLC dépassée ?? ».</p>
       <div class="ligne-fichier">
         <button class="btn" onclick="document.getElementById('fF1').click()">Charger le PDF</button>
         <input type="file" id="fF1" accept="application/pdf">
@@ -122,8 +122,12 @@ pre.mail{white-space:pre-wrap;background:#fff;border:1px solid var(--bord);borde
       </div>
       <textarea id="tF1" placeholder="Ou collez le texte du listing ici"></textarea>
       <div class="reglage">
-        <label for="motCle">Mot-clé transfert</label>
-        <input type="text" id="motCle" value="POITRINE" style="width:130px">
+        <label for="motCle">Mots-clés transfert</label>
+        <input type="text" id="motCle" value="POITRINE, KIPPENBORST" style="width:190px">
+      </div>
+      <div class="reglage">
+        <label for="motExclu">Exclure si le libellé contient</label>
+        <input type="text" id="motExclu" value="FILET, KRAAKBEEN" style="width:180px">
       </div>
       <div class="reglage">
         <label for="seuilAge">Alerte DLC à partir de</label>
@@ -331,11 +335,21 @@ function calculFrigo4(articles, poidsPal, arrondi){
 }
 
 /* Frigo 1 : articles de la liste d'un côté, transferts poitrine hors liste de l'autre. */
-function calculFrigo1(articles, codesListe, motCle){
+/* Part au frigo 4 : un article hors liste dont le libellé contient l'un des mots-clés
+   (POITRINE, KIPPENBORST…) et aucun des mots exclus (FILET…). */
+function calculFrigo1(articles, codesListe, motsCles, motsExclus){
   const codes = new Set(codesListe);
-  const mc = (motCle || "POITRINE").toUpperCase();
-  const interet   = articles.filter(a => codes.has(a.code) && a.qte > 0);
-  const transfert = articles.filter(a => !codes.has(a.code) && a.libelle.toUpperCase().includes(mc) && a.lots > 0);
+  const decoupe = v => (Array.isArray(v) ? v : String(v == null ? "" : v).split(/[,;]+/))
+                         .map(m => m.trim().toUpperCase()).filter(Boolean);
+  const mots = decoupe(motsCles).length ? decoupe(motsCles) : ["POITRINE"];
+  const exclus = decoupe(motsExclus);
+
+  const interet = articles.filter(a => codes.has(a.code) && a.qte > 0);
+  const transfert = articles.filter(a => {
+    if(codes.has(a.code) || a.lots === 0) return false;
+    const lib = a.libelle.toUpperCase();
+    return mots.some(m => lib.includes(m)) && !exclus.some(m => lib.includes(m));
+  });
   return {interet, transfert, palettesTransferees: transfert.reduce((s,a) => s + a.lots, 0)};
 }
 
@@ -518,7 +532,7 @@ const CODES_DEFAUT = [
   3041,3042,3043,3044,3045,3046,3047,3048,3049,3050,3051,3052,
   3069,3070,3071,3072,
   3091,3092,3093,3094,
-  3127,3130,
+  3127,3130,3141,
   3402,3403,3405,3409,3410,3411,3412,3413,3423,3432,3450,3452,
   3501,3528,3551,3553,3569,3570,3571,3572,
   3603,3609,3611,3613,3617,3623,3625,3631,3643,3646,3655,3656,3674,3683,3684,3687,
@@ -566,7 +580,7 @@ function rafraichir(){
 
   /* Frigo 1 */
   const f1 = parseStock($("tF1").value);
-  const r1 = calculFrigo1(f1.articles, codes, $("motCle").value);
+  const r1 = calculFrigo1(f1.articles, codes, $("motCle").value, $("motExclu").value);
   etat.interet = r1.interet; etat.transfert = r1.palettesTransferees;
   $("cptF1").textContent = r1.interet.length + (r1.interet.length > 1 ? " articles" : " article");
   $("dateF1").textContent = horodatage($("tF1").value);
@@ -628,7 +642,7 @@ function brancher(idIn, idNom, idTa){
 $("codesF1").value = CODES_DEFAUT.join(" ");
 $("alias").value = ALIAS_DEFAUT;
 brancher("fF4","nF4","tF4"); brancher("fF1","nF1","tF1"); brancher("fCmd","nCmd","tCmd");
-["tF4","tF1","tCmd","poidsPal","motCle","codesF1","alias","tailleLot","seuilAge"].forEach(id => $(id).addEventListener("input", rafraichir));
+["tF4","tF1","tCmd","poidsPal","motCle","motExclu","codesF1","alias","tailleLot","seuilAge"].forEach(id => $(id).addEventListener("input", rafraichir));
 $("arrondi").addEventListener("change", rafraichir);
 $("typeJours").addEventListener("change", rafraichir);
 $("decoupeParDate").addEventListener("change", rafraichir);

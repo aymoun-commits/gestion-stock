@@ -114,7 +114,7 @@ pre.mail{white-space:pre-wrap;background:#fff;border:1px solid var(--bord);borde
 
     <section class="carte">
       <h2>Stock frigo 1 (Listing 200) <span class="pastille" id="cptF1">0 article</span><span class="horodatage" id="dateF1"></span></h2>
-      <p class="aide">Listing « Actueel voorraadbestand ». Les codes de la liste vont au mail ; les articles hors liste correspondant aux mots-clés partent au frigo 4, une palette par ligne de lot. Un lot trop ancien déclenche la mention « congélateur = DLC dépassée ?? ».</p>
+      <p class="aide">Listing « Actueel voorraadbestand ». Les codes de la liste vont au mail ; les articles hors liste correspondant aux mots-clés partent au frigo 4, une palette par ligne de lot. Une palette à DLC dépassée est signalée ; une palette venue d'un autre site porte son origine. Ni l'une ni l'autre n'est proposée à la vente.</p>
       <div class="ligne-fichier">
         <button class="btn" onclick="document.getElementById('fF1').click()">Charger le PDF</button>
         <input type="file" id="fF1" accept="application/pdf">
@@ -192,7 +192,7 @@ pre.mail{white-space:pre-wrap;background:#fff;border:1px solid var(--bord);borde
 
   <section class="carte" style="margin-bottom:18px">
     <h2>Détail du mail</h2>
-    <p class="aide">Généré depuis les listings : stock moins ventes, client entre parenthèses, article retiré s'il ne reste rien. Modifiable à la main avant génération.</p>
+    <p class="aide">Généré depuis les listings : une ligne par origine et par date, client entre parenthèses. Les commandes ne se posent que sur les palettes vendables. Modifiable à la main avant génération.</p>
     <textarea id="tDet" class="detail"></textarea>
   </section>
 
@@ -385,6 +385,14 @@ function nomCourt(client, alias){
   return n.split(/\s+/).map(m => m[0] + m.slice(1).toLowerCase()).join(" ");
 }
 
+/* « PLUKON OMMEL BV » -> « Ommel » : on retire le préfixe et la forme juridique */
+function nomSite(site){
+  const n = String(site).replace(/\bPLUKON\b/ig," ").replace(/\b(BV|B\.V\.|NV|N\.V\.)\b/ig," ")
+                        .replace(/\s{2,}/g," ").trim();
+  if(!n) return String(site).trim();
+  return n.split(/\s+/).map(m => m[0].toUpperCase() + m.slice(1).toLowerCase()).join(" ");
+}
+
 /* Ne touchent pas le stock de Mouscron, et ne figurent donc pas au mail :
    les commandes portant un site de production (Ommel, Dedemsvaart…), servies ailleurs,
    et celles marquées « frais du jour », produites le jour même. */
@@ -428,10 +436,23 @@ function lignesMail(interet, ventes, opts){
 
   interet.forEach(a => {
     const v = parCode[a.code] || [];
+    const groupes = a.detailLots && a.detailLots.length ? groupesLots(a, opts.decoupeParDate !== false) : [];
 
-    // Le stock est attribué aux clients dans l'ordre du listing, jusqu'à épuisement.
-    // Ce qui est commandé au-delà du stock sera produit : cela ne concerne pas ce récap.
-    let restant = a.qte;
+    // Deux motifs rendent une palette invendable : une DLC dépassée,
+    // et une origine autre que Mouscron. Les commandes ne se posent que sur le reste.
+    groupes.forEach(g => {
+      g.age = g.site ? 0
+            : (opts.joursCalendrier ? (a.dateDoc - g.jour) : ecartOuvre(g.jour, a.dateDoc));
+      g.dlcDepassee = !g.site && seuilAge && g.age >= seuilAge;
+      g.vendable = !g.site && !g.dlcDepassee;
+    });
+
+    const stockVendable = groupes.length
+      ? groupes.filter(g => g.vendable).reduce((s,g) => s + g.qte, 0)
+      : a.qte;
+
+    // Attribution aux clients dans l'ordre du listing, jusqu'à épuisement du stock vendable.
+    let restant = stockVendable;
     const alloues = [];
     for(const x of v){
       if(restant <= 0) break;
@@ -440,21 +461,20 @@ function lignesMail(interet, ventes, opts){
       restant -= pris;
     }
     const mention = !alloues.length ? ""
-      : (alloues.length === 1 && alloues[0].qte >= a.qte)
+      : (alloues.length === 1 && alloues[0].qte >= stockVendable)
         ? " (Vendu pour " + nomCourt(alloues[0].client, alias) + ")"
         : " (" + alloues.map(x => notation(x.qte, a.unite) + " vendu pour " + nomCourt(x.client, alias)).join(" et ") + ")";
 
-    const groupes = a.detailLots && a.detailLots.length ? groupesLots(a, opts.decoupeParDate !== false) : [];
     if(!groupes.length){ out.push(notation(a.qte, a.unite) + " " + a.code + mention); return; }
 
+    // La vente se rattache à la première ligne vendable, jamais à une ligne invendable.
+    const premierVendable = groupes.findIndex(g => g.vendable);
     groupes.forEach((g, i) => {
       const faux = {qte:g.qte, unite:a.unite, tailles:g.tailles};
       let ligne = notationLots(faux, tailleLot) + " " + a.code;
-      if(i === 0) ligne += mention;                      // la vente se rattache à la première ligne
-      if(!g.site && seuilAge){
-        const age = opts.joursCalendrier ? (a.dateDoc - g.jour) : ecartOuvre(g.jour, a.dateDoc);
-        if(age >= seuilAge) ligne += "  congélateur = DLC dépassée ??";
-      }
+      if(i === premierVendable) ligne += mention;
+      if(g.dlcDepassee) ligne += "  congélateur = DLC dépassée ??";
+      else if(g.site)   ligne += "  origine " + nomSite(g.site);
       out.push(ligne);
     });
   });
